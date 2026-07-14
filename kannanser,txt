@@ -1,0 +1,104 @@
+import telebot
+import re
+import random
+import threading
+import time
+import os
+import requests
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReactionTypeEmoji
+
+# 1. ടോക്കൺ (സെക്യൂരിറ്റി ഉറപ്പാക്കാൻ Render Env Variable-ൽ 'BOT_TOKEN' ആയി നൽകുന്നതാണ് ഏറ്റവും സുരക്ഷിതം. അല്ലെങ്കിൽ നേരിട്ട് താഴെ നൽകാം)
+API_TOKEN = os.environ.get('BOT_TOKEN', '8965764295:AAGcG1Tkd8Y7_pD4Z62Sxq5trFhg5JjHwd4')
+bot = telebot.TeleBot(API_TOKEN)
+
+# 2. കസ്റ്റം ഷെയർ ലിങ്ക്
+CUSTOM_SHARE_LINK = 'https://t.me/+lZgpL5ALAxtlNTM1'
+
+# Render ഹെൽത്ത് ചെക്ക് സെർവർ (UptimeRobot-ന് കണക്ട് ചെയ്യാൻ)
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is running 24/7 with All Commands")
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_health_server, daemon=True).start()
+
+# ലിങ്കുകൾ കണ്ടുപിടിക്കാനുള്ള പാറ്റേൺ
+LINK_PATTERN = re.compile(r'(https?://[^\s]+)|(www\.[^\s]+)|(t\.me/[^\s]+)|(@[a-zA-Z0-9_]{5,})', re.IGNORECASE)
+LINK_EMOJIS = ['❤️', '🔥', '⚡', '👍']
+
+user_warnings = {}            
+last_warning_id = None
+link_spam_tracker = {}        
+leaderboard_data = {}         
+active_group_chats = set()    
+
+# ജാക്ക്പോട്ട് ട്രാക്ക് ചെയ്യാനുള്ള ഡിക്ഷ്ണറി
+jackpot_tracker = {}
+
+def is_user_admin(chat_id, user_id):
+    try:
+        chat_member = bot.get_chat_member(chat_id, user_id)
+        return chat_member.status in ['creator', 'administrator']
+    except Exception:
+        return False
+
+def delete_message_after_time(chat_id, message_id, delay_seconds):
+    time.sleep(delay_seconds)
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+def unmute_spam_user(chat_id, user_id):
+    time.sleep(5)
+    try:
+        bot.restrict_chat_member(chat_id, user_id, can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_add_web_page_previews=True)
+    except Exception:
+        pass
+
+def unmute_user_after_time(chat_id, user_id):
+    time.sleep(60)
+    try:
+        bot.restrict_chat_member(chat_id, user_id, can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_add_web_page_previews=True)
+    except Exception:
+        pass
+
+# ലിങ്ക് കൗണ്ട് അനുസരിച്ച് ബാഡ്ജ് നൽകുന്ന ഫങ്ക്ഷൻ
+def get_user_badge(score):
+    if score >= 50:
+        return "Gold King 🥇"
+    elif score >= 30:
+        return "Silver Linker 🥈"
+    elif score >= 10:
+        return "Bronze Linker 🥉"
+    else:
+        return "Newbie 👶"
+
+# ലീഡർബോർഡ് ടെക്സ്റ്റ് നിർമ്മിക്കുന്ന ഫങ്ക്ഷൻ
+def generate_leaderboard_text():
+    if not leaderboard_data:
+        return "👑 *TOP SHARERS LEADERBOARD* 👑\n\nഇതുവരെ ആരും ലിങ്കുകൾ ഷെയർ ചെയ്തിട്ടില്ല! ഉഷാറാകൂ മച്ചാന്മാരെ! 🔥"
+    
+    sorted_sharers = sorted(leaderboard_data.items(), key=lambda x: x[1]['score'], reverse=True)[:5]
+    text = "👑 *TOP SHARERS LEADERBOARD* 👑\n\n"
+    medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
+    
+    for index, (uid, data) in enumerate(sorted_sharers):
+        badge = get_user_badge(data['score'])
+        text += f"{medals[index]} *{data['name']}* : {data['score']} Links | _{badge}_\n"
+        
+    text += "\n💎 കൂടുതൽ ലിങ്കുകൾ ഷെയർ ചെയ്ത് നിങ്ങളും ടോപ്പിൽ എത്തൂ! 🔥"
+    return text
+
+# ബട്ടണുകൾ ഉണ്ടാക്കുന്ന ഫങ്ക്ഷൻ
+def get_main_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    share_btn = InlineKeyboardButton(text
